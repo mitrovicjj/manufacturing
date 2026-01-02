@@ -62,3 +62,12 @@ experiments/
 
 # Environment variables
 .env
+
+# MLflow
+mlruns/
+mlflow.db
+
+# Model artifacts
+models/*
+!models/.gitkeep
+!models/*_results.png
