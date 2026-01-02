@@ -1,8 +1,3 @@
-"""
-Training pipeline for predictive maintenance model.
-Handles data loading, feature engineering, oversampling, model training, and saving.
-"""
-
 import os
 import argparse
 import joblib
@@ -14,26 +9,23 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 from imblearn.over_sampling import RandomOverSampler
-
 from src.ml.features import build_features, get_feature_columns
+from src.ml.feature_store import FeatureStore
+from hashlib import md5
 
 
-# =============================================================================
-# MODEL CREATION
-# =============================================================================
-
-def create_model_pipeline(numeric_features, model_params=None):
+def create_model_pipeline(df_features, target_col, model_params=None):
     """
-    Create sklearn Pipeline with preprocessing + XGBoost.
+    FULL sklearn Pipeline: numeric + categorical encoded features + XGBoost.
     
     Args:
-        numeric_features: List of numeric feature column names
+        df_features: DataFrame sa svim feature kolonama
+        target_col: Naziv target kolone (npr. 'downtime_next_5')
         model_params: Dict of XGBoost hyperparameters (optional)
     
     Returns:
-        sklearn Pipeline
+        sklearn Pipeline spreman za fit()
     """
-
     if model_params is None:
         model_params = {
             'n_estimators': 200,
@@ -41,32 +33,43 @@ def create_model_pipeline(numeric_features, model_params=None):
             'learning_rate': 0.08,
             'subsample': 0.9,
             'colsample_bytree': 0.9,
-            'scale_pos_weight': 20,  # class imbalance handling
-            'use_label_encoder': False,
+            'scale_pos_weight': 20,
             'eval_metric': 'logloss',
             'random_state': 42
         }
     
-    # Preprocessing: StandardScaler for numeric features
-    preprocess = ColumnTransformer(
-        transformers=[
-            ('num', StandardScaler(), numeric_features)
-        ],
-        remainder='passthrough'
-    )
+    # 1. Automatski feature selection
+    feature_cols = get_feature_columns(df_features, target_col)
+    X_sample = df_features[feature_cols]
     
-    # XGBoost model
+    # 2. NUMERIC features
+    numeric_features = X_sample.select_dtypes(include=['number']).columns.tolist()
+    
+    # 3. CATEGORICAL encoded features (za OneHotEncoder)
+    cat_encoded_features = [col for col in feature_cols 
+                          if any(x in col.lower() for x in ['_encoded', '_state_encoded'])]
+    
+    print(f"Pipeline: {len(numeric_features)} numeric + {len(cat_encoded_features)} cat → {len(feature_cols)} total")
+    
+    from sklearn.preprocessing import StandardScaler, OneHotEncoder
+    from sklearn.compose import ColumnTransformer
+    from sklearn.pipeline import Pipeline
+    from xgboost import XGBClassifier
+    
+    # 4. FULL preprocessing
+    preprocess = ColumnTransformer([
+        ('num', StandardScaler(), numeric_features),
+        ('cat', OneHotEncoder(sparse_output=False, drop='first', handle_unknown='ignore'), cat_encoded_features)
+    ], remainder='drop')  # Drop sve ostalo
+    
+    # 5. Pipeline
     model = XGBClassifier(**model_params)
-    
-    # Pipeline
-    clf = Pipeline(steps=[
+    clf = Pipeline([
         ('preprocess', preprocess),
         ('model', model)
     ])
     
     return clf
-
-# OVERSAMPLING
 
 def handle_imbalance(X_train, y_train, method='oversample', sampling_strategy='auto'):
     """
@@ -114,7 +117,7 @@ def train_model(data_path,
                 oversample=True,
                 model_params=None):
     """
-    Complete training pipeline.
+    Complete training pipeline sa FULL features (numeric + categorical encoded).
     
     Args:
         data_path: Path to raw CSV data
@@ -131,29 +134,43 @@ def train_model(data_path,
         Trained pipeline, X_test, y_test
     """
     print("="*70)
-    print("TRAINING PIPELINE START")
+    print("TRAINING PIPELINE START - FULL FEATURES")
     print("="*70)
     
-    # 1. Load data
+    # [1/6] Load data
     print(f"\n[1/6] Loading data from: {data_path}")
     df = pd.read_csv(data_path)
     print(f"  Loaded {len(df)} rows, {len(df.columns)} columns")
     
-    # 2. Feature engineering
-    print(f"\n[2/6] Feature engineering...")
-    df_features = build_features(
-        df,
-        target_type=target_type,
-        target_window=target_window,
-        rolling_window=rolling_window
-    )
+    # [2/6] Feature engineering SA CACHE-OM
+    print(f"\n[2/6] Feature engineering (sa cache-om)...")
+    store = FeatureStore()
+
+    feature_config = {
+        'data_path': os.path.basename(data_path),
+        'target_type': target_type,
+        'target_window': target_window,
+        'rolling_window': rolling_window
+    }
+    df_features = store.get_features(feature_config)
+
+    if df_features is None:
+        print("  Računam features...")
+        df_features = build_features(
+            df, target_type=target_type, 
+            target_window=target_window, 
+            rolling_window=rolling_window
+        )
+        store.save_features(df_features, feature_config)
+    else:
+        print("  ✓ Features učitani iz cache-a!")
     
     # Save feature-engineered data if requested
     if output_data_path:
         df_features.to_csv(output_data_path, index=False)
         print(f"  ✓ Saved feature data to: {output_data_path}")
     
-    # 3. Prepare X and y
+    # [3/6] Prepare features + target
     print(f"\n[3/6] Preparing features and target...")
     target_col = 'downtime_next' if target_type == 'next' else f'downtime_next_{target_window}'
     
@@ -161,32 +178,33 @@ def train_model(data_path,
     X = df_features[feature_cols]
     y = df_features[target_col]
     
-    print(f"  Features: {len(feature_cols)} columns")
+    print(f"  Features: {len(feature_cols)} columns (SVE features!)")
     print(f"  Target: {target_col}")
     print(f"  Class balance: {(y==0).sum()} negative, {(y==1).sum()} positive ({(y==1).mean()*100:.1f}% positive)")
     
-    # 4. Train-test split
+    # [4/6] Train-test split (CELO df_features za pipeline)
     print(f"\n[4/6] Splitting data (test_size={test_size})...")
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, 
-        test_size=test_size, 
-        random_state=42, 
-        stratify=y
+        df_features, y, test_size=test_size, random_state=42, stratify=y
     )
     print(f"  Train: {len(X_train)} samples")
     print(f"  Test: {len(X_test)} samples")
     
-    # 5. Handle imbalance (oversampling on train set only!)
+    # [5/6] Handle imbalance (oversampling SAMO train set)
     print(f"\n[5/6] Handling class imbalance...")
     if oversample:
-        X_train, y_train = handle_imbalance(X_train, y_train, method='oversample')
+        X_train_resampled, y_train_resampled = handle_imbalance(
+            X_train[feature_cols], y_train, method='oversample'
+        )
     else:
-        X_train, y_train = handle_imbalance(X_train, y_train, method='none')
+        X_train_resampled, y_train_resampled = handle_imbalance(
+            X_train[feature_cols], y_train, method='none'
+        )
     
-    # 6. Train model
-    print(f"\n[6/6] Training model...")
-    clf = create_model_pipeline(numeric_features=feature_cols, model_params=model_params)
-    clf.fit(X_train, y_train)
+    # [6/6] FULL Pipeline training
+    print(f"\n[6/6] Training FULL pipeline...")
+    clf = create_model_pipeline(df_features, target_col, model_params=model_params)
+    clf.fit(X_train_resampled, y_train_resampled)  # Pipeline prima df_features!
     print("  ✓ Model training complete!")
     
     # Save model
@@ -197,8 +215,8 @@ def train_model(data_path,
     # Quick evaluation
     from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score
     
-    y_pred = clf.predict(X_test)
-    y_proba = clf.predict_proba(X_test)[:, 1]
+    y_pred = clf.predict(X_test[feature_cols])
+    y_proba = clf.predict_proba(X_test[feature_cols])[:, 1]
     
     roc_auc = roc_auc_score(y_test, y_proba)
     f1 = f1_score(y_test, y_pred)
@@ -214,7 +232,7 @@ def train_model(data_path,
     print(f"Recall:    {recall:.4f}")
     print("="*70)
     
-    return clf, X_test, y_test
+    return clf, X_test[feature_cols], y_test
 
 
 # CLI
@@ -243,14 +261,12 @@ def main():
     parser.add_argument("--no_oversample", action='store_true',
                         help="Disable oversampling")
     
-    # XGBoost hyperparameters
     parser.add_argument("--n_estimators", type=int, default=200)
     parser.add_argument("--max_depth", type=int, default=6)
     parser.add_argument("--learning_rate", type=float, default=0.08)
     
     args = parser.parse_args()
     
-    # Build model params from CLI args
     model_params = {
         'n_estimators': args.n_estimators,
         'max_depth': args.max_depth,

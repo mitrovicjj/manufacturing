@@ -3,37 +3,28 @@ import argparse
 import joblib
 import pandas as pd
 import numpy as np
-
+from config import (
+    FINAL_MODEL_PATH,
+    FINAL_THRESHOLD,
+    FINAL_PREDICTIONS_PATH)
 from src.ml.features import build_features, get_feature_columns
-
-# LOAD MODEL
 
 def load_model(model_path):
     """
     Load trained model from disk.
-    
-    Args:
-        model_path: Path to .pkl model file
-    
+        model_path: path to .pkl model file
     Returns:
         Loaded model pipeline
     """
     model = joblib.load(model_path)
-    # Set n_jobs to 1 for reproducibility
+    # set n_jobs to 1 for reproducibility
     if hasattr(model, 'n_jobs'):
         model.n_jobs = 1
     return model
 
-# PREDICT
-
-def predict(model, X):
+def predict(model, X, threshold=0.5):
     """
     Generate predictions and probabilities.
-    
-    Args:
-        model: Trained model pipeline
-        X: Features DataFrame
-    
     Returns:
         probs: Predicted probabilities for positive class
         preds: Binary predictions (0 or 1)
@@ -42,11 +33,9 @@ def predict(model, X):
         probs = model.predict_proba(X)[:, 1]
     else:
         probs = model.predict(X)
-    
-    preds = (probs > 0.5).astype(int)
-    
-    return probs, preds
 
+    preds = (probs >= threshold).astype(int)
+    return probs, preds
 
 def predict_on_data(model_path,
                     data_path,
@@ -59,32 +48,30 @@ def predict_on_data(model_path,
     Complete prediction pipeline on new data.
     
     Args:
-        model_path: Path to trained model (.pkl)
-        data_path: Path to raw CSV data
-        output_path: Path to save predictions (optional)
-        target_type: 'next' or 'windowed' (must match training!)
-        target_window: Window size if windowed
-        rolling_window: Rolling window size (must match training!)
-        target_col: Target column name if data has labels (optional)
+        model_path: path to .pkl model file
+        data_path: path to raw CSV data
+        output_path: path to save predictions-optional
+        target_type: 'next' or 'windowed' (must match training)
+        target_window: window size-optional
+        rolling_window: rolling window size (must match training)
+        target_col: target column name if data has labels (optional)
     
     Returns:
-        DataFrame with predictions and probabilities added
+        DF with predictions and probabilities
     """
+
     print("="*70)
     print("PREDICTION PIPELINE START")
     print("="*70)
     
-    # 1. Load model
     print(f"\n[1/4] Loading model from: {model_path}")
     model = load_model(model_path)
-    print("  ✓ Model loaded")
+    print("     Model loaded")
     
-    # 2. Load data
     print(f"\n[2/4] Loading data from: {data_path}")
     df = pd.read_csv(data_path)
     print(f"  Loaded {len(df)} rows, {len(df.columns)} columns")
-    
-    # 3. Feature engineering
+
     print(f"\n[3/4] Feature engineering...")
     print(f"  (Must match training config: target_type={target_type}, rolling_window={rolling_window})")
     
@@ -95,21 +82,20 @@ def predict_on_data(model_path,
         rolling_window=rolling_window
     )
     
-    # Determine target column name
+    # determine target column name
     if target_col is None:
         target_col = 'downtime_next' if target_type == 'next' else f'downtime_next_{target_window}'
     
-    # Get feature columns (same as training)
+    # get feature columns (same as training)
     feature_cols = get_feature_columns(df_features, target_col=target_col)
     X = df_features[feature_cols]
     
     print(f"  Features: {len(feature_cols)} columns")
     
-    # 4. Predict
     print(f"\n[4/4] Generating predictions...")
     probs, preds = predict(model, X)
     
-    # Add predictions to dataframe
+    # add predictions to dataframe
     df_features['downtime_risk'] = probs
     df_features['downtime_predicted'] = preds
     
@@ -117,7 +103,6 @@ def predict_on_data(model_path,
     print(f"  Predicted downtime rate: {preds.mean()*100:.2f}%")
     print(f"  Average risk score: {probs.mean():.4f}")
     
-    # Save if output path provided
     if output_path:
         df_features.to_csv(output_path, index=False)
         print(f"  ✓ Predictions saved to: {output_path}")
@@ -131,54 +116,66 @@ def predict_on_data(model_path,
 
 # BATCH PREDICTION FOR SIMULATION
 
-def predict_for_simulation(model_path,
-                          data_path,
-                          output_path,
-                          target_type='windowed',
-                          target_window=5,
-                          rolling_window=20):
+def predict_final_for_simulation(
+    data_path,
+    output_path=FINAL_PREDICTIONS_PATH,
+    target_type='windowed',
+    target_window=5,
+    rolling_window=30,
+    lag_periods=[1,3,5]
+):
     """
-    Predict downtime risk for Tecnomatix simulation integration.
-    Outputs CSV with cycle_id and downtime_risk.
-    
-    Args:
-        model_path: Path to trained model
-        data_path: Path to raw data
-        output_path: Path to save simulation-ready CSV
-        target_type: Target type (must match training)
-        target_window: Target window (must match training)
-        rolling_window: Rolling window (must match training)
-    
-    Returns:
-        DataFrame with predictions
+    Final frozen inference using FINAL_MODEL_PATH and FINAL_THRESHOLD.
+    Performs feature engineering in-place.
     """
-    print("\n📊 GENERATING PREDICTIONS FOR TECNOMATIX SIMULATION")
-    
-    df_pred = predict_on_data(
-        model_path=model_path,
-        data_path=data_path,
-        output_path=None,  # Don't save full data yet
+    print("\nRUNNING FINAL MODEL FOR SIMULATION")
+
+    model = load_model(FINAL_MODEL_PATH)
+    df = pd.read_csv(data_path)
+
+    df_features = build_features(
+        df,
         target_type=target_type,
         target_window=target_window,
         rolling_window=rolling_window
     )
-    
-    # Create simulation-ready output
-    sim_cols = ['cycle_id', 'downtime_risk', 'downtime_predicted']
-    
-    # Check if cycle_id exists, if not create index
-    if 'cycle_id' not in df_pred.columns:
-        df_pred['cycle_id'] = range(len(df_pred))
-    
-    df_sim = df_pred[sim_cols].copy()
-    
-    # Save
-    df_sim.to_csv(output_path, index=False)
-    print(f"\n✓ Simulation-ready predictions saved to: {output_path}")
-    print(f"  Columns: {list(df_sim.columns)}")
-    print(f"  Rows: {len(df_sim)}")
-    
-    return df_sim
+
+
+    target_col = f'downtime_next_{target_window}'
+    feature_cols = get_feature_columns(df_features, target_col=target_col)
+    X = df_features[feature_cols]
+
+    probs, preds = predict(model, X, threshold=FINAL_THRESHOLD)
+
+    df_features['downtime_risk'] = probs
+    df_features['downtime_predicted'] = preds
+
+    if 'cycle_id' not in df_features.columns:
+        df_features['cycle_id'] = range(len(df_features))
+
+    df_out = df_features[['cycle_id', 'downtime_risk', 'downtime_predicted']]
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    df_out.to_csv(output_path, index=False)
+
+    metrics = {
+        'threshold': FINAL_THRESHOLD,
+        'predicted_downtime_rate': preds.mean(),
+        'average_risk_score': probs.mean(),
+        'num_rows': len(df_features),
+        'num_features': len(df_features.columns)
+    }
+    metrics_path = os.path.join(os.path.dirname(output_path), "metrics.csv")
+    pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+
+    #fll_features_path = os.path.join(os.path.dirname(output_path), "features_with_predictions.csv")
+    #f_features.to_csv(full_features_path, index=False)
+
+    print(f"✓ Final predictions saved to {output_path}")
+    print(f"✓ Threshold used: {FINAL_THRESHOLD}")
+    print(f"✓ Predicted downtime rate: {preds.mean()*100:.2f}%")
+
+    return df_out
+
 
 # CLI
 
@@ -207,17 +204,6 @@ def main():
     args = parser.parse_args()
     
     if args.for_simulation:
-        # Simulation-ready output
-        predict_for_simulation(
-            model_path=args.model,
-            data_path=args.data,
-            output_path=args.output or "predictions_sim.csv",
-            target_type=args.target_type,
-            target_window=args.target_window,
-            rolling_window=args.rolling_window
-        )
-    else:
-        # Full prediction output
         predict_on_data(
             model_path=args.model,
             data_path=args.data,

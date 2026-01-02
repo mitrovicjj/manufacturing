@@ -17,3 +17,19 @@ class ExperimentConfig:
     def create_dirs(self):
         os.makedirs(self.experiment_dir, exist_ok=True)
         os.makedirs(self.eval_dir, exist_ok=True)
+
+BASE_DIR = "C:/Users/Korisnik/py/manufacturing"
+
+FINAL_MODEL_PATH = os.path.join(
+    BASE_DIR,
+    "models",
+    "xgb_pm_final.pkl"
+)
+
+FINAL_THRESHOLD = 0.35
+FINAL_PREDICTIONS_PATH = os.path.join(
+    BASE_DIR,
+    "data",
+    "processed",
+    "predictions_pm_final.csv"
+)
