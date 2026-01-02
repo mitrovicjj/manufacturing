@@ -9,6 +9,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.ml.train import train_model
 from src.ml.predict import predict_on_data
 from src.ml.eval import evaluate_on_data
+from src.ml.predict import predict_final_for_simulation
+
+
+FINAL_MODEL_PATH = os.path.join("models", "xgb_pm_final.pkl")
 
 def save_experiment_log(config, quick_eval_metrics, eval_metrics):
     log = {
@@ -391,7 +395,7 @@ def main():
     parser.add_argument("--base_dir", type=str, 
                         default="C:/Users/Korisnik/py/manufacturing",
                         help="Base directory of project")
-    
+
     # Search modes
     parser.add_argument("--grid_search", action='store_true',
                         help="Run grid search")
@@ -400,6 +404,11 @@ def main():
     parser.add_argument("--n_iter", type=int, default=10,
                         help="Number of iterations for random search")
     
+    parser.add_argument("--predict_final", action="store_true",
+                        help="Run prediction using final model for Tecnomatix simulation")
+    parser.add_argument("--predict_data_path", type=str, default=None,
+                        help="Path to features CSV for final prediction")
+
     args = parser.parse_args()
     
     # Create base config
@@ -436,6 +445,11 @@ def main():
             'learning_rate': [0.01, 0.15]       # random float between 0.01-0.15
         }
         run_random_search(config, param_distributions, n_iter=args.n_iter)
+
+    elif args.predict_final:
+        data_path = args.predict_data_path or "data/processed/logs_all_machines_features.csv"
+        predict_final_for_simulation(data_path=data_path)
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
