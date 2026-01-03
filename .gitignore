@@ -68,6 +68,7 @@ mlruns/
 mlflow.db
 anfis_plots/
 tests/
+notebooks/
 
 # Model artifacts
 models/*
