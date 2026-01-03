@@ -66,6 +66,8 @@ experiments/
 # MLflow
 mlruns/
 mlflow.db
+anfis_plots/
+tests/
 
 # Model artifacts
 models/*
