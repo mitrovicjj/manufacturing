@@ -1,8 +1,12 @@
-import os
+# python run.py --experiment_name inference --predict_final --predict_data_path data/raw/logs.csvimport os
 import json
 import sys
 import argparse
 from datetime import datetime
+import mlflow
+import mlflow.sklearn
+import numpy as np
+from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, confusion_matrix
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
@@ -123,75 +127,142 @@ class ExperimentConfig:
 
 # RUN EXPERIMENT
 
-def run_experiment(config):
+def run_experiment(config, use_mlflow=False):
     """
     Run complete experiment: train → predict → evaluate.
     
     Args:
         config: ExperimentConfig object
+        use_mlflow: Whether to log to MLflow
     """
     config.create_dirs()
     config.print_config()
     
-    # === STEP 1: TRAIN ===
-    print("\n" + "🚂 "*20)
-    print("STEP 1: TRAINING")
-    print("🚂 "*20 + "\n")
+    if use_mlflow:
+        mlflow.start_run(run_name=config.experiment_name)
+        # Log parameters
+        mlflow.log_param("rolling_window", config.rolling_window)
+        mlflow.log_param("target_window", config.target_window)
+        mlflow.log_param("learning_rate", config.model_params['learning_rate'])
+        mlflow.log_param("max_depth", config.model_params['max_depth'])
+        mlflow.log_param("n_estimators", config.model_params['n_estimators'])
+        mlflow.log_param("scale_pos_weight", config.model_params['scale_pos_weight'])
     
-    clf, X_test, y_test = train_model(
-        data_path=config.raw_data_path,
-        output_model_path=config.model_path,
-        output_data_path=config.features_path,
-        target_type=config.target_type,
-        target_window=config.target_window,
-        rolling_window=config.rolling_window,
-        test_size=config.test_size,
-        oversample=config.oversample,
-        model_params=config.model_params
-    )
-    
-    # === STEP 2: PREDICT ===
-    print("\n" + "🔮 "*20)
-    print("STEP 2: PREDICTION")
-    print("🔮 "*20 + "\n")
-    
-    df_predictions = predict_on_data(
-        model_path=config.model_path,
-        data_path=config.raw_data_path,
-        output_path=config.predictions_path,
-        target_type=config.target_type,
-        target_window=config.target_window,
-        rolling_window=config.rolling_window
-    )
-    
-    # === STEP 3: EVALUATE ===
-    print("\n" + "📊 "*20)
-    print("STEP 3: EVALUATION")
-    print("📊 "*20 + "\n")
-    
-    evaluate_on_data(
-        model_path=config.model_path,
-        test_csv=config.raw_data_path,
-        output_dir=config.eval_dir,
-        target_type=config.target_type,
-        target_window=config.target_window,
-        rolling_window=config.rolling_window
-    )
-    
-    # === SUMMARY ===
-    print("\n" + "="*70)
-    print("✅ EXPERIMENT COMPLETE!")
-    print("="*70)
-    print(f"Results saved to: {config.experiment_dir}")
-    print(f"  - Model: {config.model_path}")
-    print(f"  - Features: {config.features_path}")
-    print(f"  - Predictions: {config.predictions_path}")
-    print(f"  - Evaluation: {config.eval_dir}")
-    print("="*70 + "\n")
+    try:
+        # === STEP 1: TRAIN ===
+        print("\n" + "🚂 "*20)
+        print("STEP 1: TRAINING")
+        print("🚂 "*20 + "\n")
+        
+        clf, X_test, y_test = train_model(
+            data_path=config.raw_data_path,
+            output_model_path=config.model_path,
+            output_data_path=config.features_path,
+            target_type=config.target_type,
+            target_window=config.target_window,
+            rolling_window=config.rolling_window,
+            test_size=config.test_size,
+            oversample=config.oversample,
+            model_params=config.model_params
+        )
+        
+        # === STEP 2: PREDICT ===
+        print("\n" + "🔮 "*20)
+        print("STEP 2: PREDICTION")
+        print("🔮 "*20 + "\n")
+        
+        df_predictions = predict_on_data(
+            model_path=config.model_path,
+            data_path=config.raw_data_path,
+            output_path=config.predictions_path,
+            target_type=config.target_type,
+            target_window=config.target_window,
+            rolling_window=config.rolling_window
+        )
+        
+        # === STEP 3: EVALUATE ===
+        print("\n" + "📊 "*20)
+        print("STEP 3: EVALUATION")
+        print("📊 "*20 + "\n")
+        
+        evaluate_on_data(
+            model_path=config.model_path,
+            test_csv=config.raw_data_path,
+            output_dir=config.eval_dir,
+            target_type=config.target_type,
+            target_window=config.target_window,
+            rolling_window=config.rolling_window
+        )
+        
+        # === MLflow METRICS ===
+        if use_mlflow:
+            y_pred = clf.predict(X_test)
+            y_proba = clf.predict_proba(X_test)[:, 1]
+            
+            # Standard metrics
+            roc_auc = roc_auc_score(y_test, y_proba)
+            f1 = f1_score(y_test, y_pred)
+            precision = precision_score(y_test, y_pred)
+            recall = recall_score(y_test, y_pred)
+            
+            # Business threshold (0.35)
+            y_pred_035 = (y_proba >= 0.35).astype(int)
+            recall_035 = recall_score(y_test, y_pred_035)
+            precision_035 = precision_score(y_test, y_pred_035, zero_division=0)
+            f1_035 = f1_score(y_test, y_pred_035, zero_division=0)
+            
+            # Confusion matrix
+            tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+            specificity = tn / (tn + fp)
+            
+            # Business metrics
+            downtime_cases = (y_test == 1).sum()
+            false_alarms = (y_pred == 1).sum() - tp
+            downtime_caught = tp / downtime_cases if downtime_cases > 0 else 0
+            
+            # Log to MLflow
+            mlflow.log_metric("roc_auc", roc_auc)
+            mlflow.log_metric("f1_score", f1)
+            mlflow.log_metric("recall", recall)
+            mlflow.log_metric("precision", precision)
+            mlflow.log_metric("specificity", specificity)
+            mlflow.log_metric("recall_035", recall_035)
+            mlflow.log_metric("precision_035", precision_035)
+            mlflow.log_metric("f1_035", f1_035)
+            mlflow.log_metric("downtime_cases", downtime_cases)
+            mlflow.log_metric("downtime_caught", downtime_caught)
+            mlflow.log_metric("false_alarms", false_alarms)
+            mlflow.log_param("n_features", len(X_test.columns))
+            
+            # Log model
+            mlflow.sklearn.log_model(clf, "model")
+            
+            print(f"\n📊 MLflow Metrics Logged:")
+            print(f"   ROC-AUC: {roc_auc:.4f}")
+            print(f"   Recall: {recall:.3f}")
+            print(f"   F1: {f1:.3f}")
+            print(f"   Business @0.35: Recall={recall_035:.3f}, Precision={precision_035:.3f}")
+        
+        # === SUMMARY ===
+        print("\n" + "="*70)
+        print("✅ EXPERIMENT COMPLETE!")
+        print("="*70)
+        print(f"Results saved to: {config.experiment_dir}")
+        print(f"  - Model: {config.model_path}")
+        print(f"  - Features: {config.features_path}")
+        print(f"  - Predictions: {config.predictions_path}")
+        print(f"  - Evaluation: {config.eval_dir}")
+        if use_mlflow:
+            print(f"  - MLflow: http://localhost:5000")
+        print("="*70 + "\n")
+        
+    finally:
+        if use_mlflow:
+            mlflow.end_run()
 
 # GRID SEARCH
 
-def run_grid_search(base_config, param_grid):
+def run_grid_search(base_config, param_grid, use_mlflow=False):
     """
     Run grid search over hyperparameters.
     
@@ -200,12 +271,15 @@ def run_grid_search(base_config, param_grid):
         param_grid: Dict of parameters to search
                    Example: {'target_window': [3, 5, 10], 
                             'rolling_window': [10, 20, 30]}
+        use_mlflow: Whether to log to MLflow
     
     Returns:
         List of (config, results) tuples
     """
     import itertools
-    import json
+    
+    if use_mlflow:
+        mlflow.set_experiment(f"{base_config.experiment_name}_grid_search")
     
     print("\n" + "🔍 "*20)
     print("GRID SEARCH MODE")
@@ -243,7 +317,7 @@ def run_grid_search(base_config, param_grid):
         
         # Run experiment
         try:
-            run_experiment(config)
+            run_experiment(config, use_mlflow=use_mlflow)
             
             # Load results
             metrics_path = os.path.join(config.eval_dir, "metrics.json")
@@ -285,7 +359,7 @@ def run_grid_search(base_config, param_grid):
 # RANDOM SEARCH
 # =============================================================================
 
-def run_random_search(base_config, param_distributions, n_iter=10):
+def run_random_search(base_config, param_distributions, n_iter=10, use_mlflow=False):
     """
     Run random search over hyperparameters.
     
@@ -296,12 +370,15 @@ def run_random_search(base_config, param_distributions, n_iter=10):
                                      'max_depth': [4, 8],
                                      'learning_rate': [0.01, 0.1]}
         n_iter: Number of random configurations to try
+        use_mlflow: Whether to log to MLflow
     
     Returns:
         List of (config, results) tuples
     """
     import random
-    import json
+    
+    if use_mlflow:
+        mlflow.set_experiment(f"{base_config.experiment_name}_random_search")
     
     print("\n" + "🎲 "*20)
     print("RANDOM SEARCH MODE")
@@ -343,7 +420,7 @@ def run_random_search(base_config, param_distributions, n_iter=10):
         
         # Run experiment
         try:
-            run_experiment(config)
+            run_experiment(config, use_mlflow=use_mlflow)
             
             # Load results
             metrics_path = os.path.join(config.eval_dir, "metrics.json")
@@ -382,6 +459,86 @@ def run_random_search(base_config, param_distributions, n_iter=10):
 
 
 # =============================================================================
+# MLFLOW BATCH EXPERIMENTS
+# =============================================================================
+
+def run_mlflow_batch(base_config, experiments):
+    """
+    Run batch MLflow experiments with predefined configurations.
+    
+    Args:
+        base_config: ExperimentConfig object
+        experiments: List of experiment configurations
+                    Example: [{"name": "exp1", "rolling_window": 20, "target_window": 5, "lr": 0.08, "depth": 6}]
+    """
+    mlflow.set_experiment(base_config.experiment_name)
+    print("🚀 MLflow BATCH EXPERIMENTS")
+    print(f"Experiment Name: {base_config.experiment_name}")
+    print(f"Total Runs: {len(experiments)}\n")
+    
+    for i, exp in enumerate(experiments, 1):
+        print(f"\n{'='*80}")
+        print(f"[{i}/{len(experiments)}] 🧪 Experiment: {exp['name']}")
+        print('='*80)
+        
+        # Create config
+        config = ExperimentConfig(
+            experiment_name=exp['name'],
+            base_dir=base_config.base_dir
+        )
+        
+        # Update parameters
+        config.rolling_window = exp.get('rolling_window', config.rolling_window)
+        config.target_window = exp.get('target_window', config.target_window)
+        config.model_params['learning_rate'] = exp.get('lr', config.model_params['learning_rate'])
+        config.model_params['max_depth'] = exp.get('depth', config.model_params['max_depth'])
+        config.model_params['n_estimators'] = exp.get('n_estimators', config.model_params['n_estimators'])
+        
+        # Run with MLflow
+        run_experiment(config, use_mlflow=True)
+    
+    print("\n" + "="*80)
+    print("✅ BATCH EXPERIMENTS COMPLETE")
+    print(f"View results: http://localhost:5000")
+    print("="*80 + "\n")
+
+
+def run_mlflow_production_batch(base_config):
+    """
+    Run the predefined 12 production experiments from original run_mlflow.py
+    """
+    experiments = [
+        # Baseline
+        {"name": "base_rw20_tw5_lr008", "rolling_window": 20, "target_window": 5, "lr": 0.08, "depth": 6, "n_estimators": 200},
+        {"name": "base_rw30_tw8_lr012", "rolling_window": 30, "target_window": 8, "lr": 0.12, "depth": 6, "n_estimators": 200},
+        
+        # Rolling window variations
+        {"name": "rw15_tw5_lr008", "rolling_window": 15, "target_window": 5, "lr": 0.08, "depth": 6, "n_estimators": 200},
+        {"name": "rw40_tw10_lr010", "rolling_window": 40, "target_window": 10, "lr": 0.10, "depth": 6, "n_estimators": 200},
+        
+        # Learning rate variations
+        {"name": "rw25_tw7_lr005", "rolling_window": 25, "target_window": 7, "lr": 0.05, "depth": 6, "n_estimators": 200},
+        {"name": "rw25_tw7_lr015", "rolling_window": 25, "target_window": 7, "lr": 0.15, "depth": 6, "n_estimators": 200},
+        
+        # Depth variations
+        {"name": "rw20_tw8_d4", "rolling_window": 20, "target_window": 8, "lr": 0.08, "depth": 4, "n_estimators": 200},
+        {"name": "rw20_tw8_d8", "rolling_window": 20, "target_window": 8, "lr": 0.08, "depth": 8, "n_estimators": 200},
+        
+        # Target window variations
+        {"name": "short_rw20_tw3", "rolling_window": 20, "target_window": 3, "lr": 0.08, "depth": 6, "n_estimators": 200},
+        {"name": "long_rw20_tw12", "rolling_window": 20, "target_window": 12, "lr": 0.08, "depth": 6, "n_estimators": 200},
+        
+        # Aggressive (high recall)
+        {"name": "agg_rw30_tw5_lr010_d5", "rolling_window": 30, "target_window": 5, "lr": 0.10, "depth": 5, "n_estimators": 200},
+        
+        # Conservative (high precision)
+        {"name": "cons_rw25_tw6_lr006_d7", "rolling_window": 25, "target_window": 6, "lr": 0.06, "depth": 7, "n_estimators": 200},
+    ]
+    
+    run_mlflow_batch(base_config, experiments)
+
+
+# =============================================================================
 # CLI
 # =============================================================================
 
@@ -404,6 +561,13 @@ def main():
     parser.add_argument("--n_iter", type=int, default=10,
                         help="Number of iterations for random search")
     
+    # MLflow options
+    parser.add_argument("--mlflow", action='store_true',
+                        help="Enable MLflow tracking for single experiment")
+    parser.add_argument("--mlflow_batch", action='store_true',
+                        help="Run predefined batch of MLflow experiments (12 configs)")
+    
+    # Prediction
     parser.add_argument("--predict_final", action="store_true",
                         help="Run prediction using final model for Tecnomatix simulation")
     parser.add_argument("--predict_data_path", type=str, default=None,
@@ -421,9 +585,13 @@ def main():
     if args.data_path:
         config.raw_data_path = args.data_path
     
+    # === MLFLOW BATCH MODE ===
+    if args.mlflow_batch:
+        run_mlflow_production_batch(config)
+    
     # === SINGLE EXPERIMENT MODE ===
-    if not args.grid_search and not args.random_search:
-        run_experiment(config)
+    elif not args.grid_search and not args.random_search and not args.predict_final:
+        run_experiment(config, use_mlflow=args.mlflow)
     
     # === GRID SEARCH MODE ===
     elif args.grid_search:
@@ -433,7 +601,7 @@ def main():
             'n_estimators': [100, 200],
             'max_depth': [4, 6, 8]
         }
-        run_grid_search(config, param_grid)
+        run_grid_search(config, param_grid, use_mlflow=args.mlflow)
     
     # === RANDOM SEARCH MODE ===
     elif args.random_search:
@@ -444,8 +612,9 @@ def main():
             'max_depth': [4, 10],               # random int between 4-10
             'learning_rate': [0.01, 0.15]       # random float between 0.01-0.15
         }
-        run_random_search(config, param_distributions, n_iter=args.n_iter)
+        run_random_search(config, param_distributions, n_iter=args.n_iter, use_mlflow=args.mlflow)
 
+    # === PREDICTION MODE ===
     elif args.predict_final:
         data_path = args.predict_data_path or "data/processed/logs_all_machines_features.csv"
         predict_final_for_simulation(data_path=data_path)
