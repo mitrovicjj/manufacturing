@@ -223,3 +223,84 @@ def get_feature_columns(df, target_col='downtime_next'):
     features = [c for c in df.columns if c not in exclude]
     
     return features
+
+# BUILD INFERENCE FEATURES - needed because of rolling windows!
+
+def build_inference_features(df, 
+                             rolling_windows=[15, 20],
+                             rolling_cols=['cycle_time', 'temperature', 'vibration', 'pressure'],
+                             lag_cols=['cycle_time', 'temperature', 'vibration', 'pressure'],
+                             lag_periods=[1, 2, 3],
+                             cat_cols=['operator', 'maintenance_type']):
+    """
+    Feature engineering za inference - bez target kolone.
+    Podržava single-cycle predikciju.
+    
+    Args:
+        df: Raw DataFrame (može biti 1 red)
+        rolling_windows: Lista window size-ova za rolling stats
+        rolling_cols: Kolone za rolling features
+        lag_cols: Kolone za lag features
+        lag_periods: Periodi za lag
+        cat_cols: Kategoričke kolone
+    
+    Returns:
+        DataFrame sa svim potrebnim feature-ima
+    """
+
+    required_input_cols = ['cycle_time', 'temperature', 'vibration', 'pressure']
+    missing = [col for col in required_input_cols if col not in df.columns]
+    
+    if missing:
+        raise ValueError(f"Missing required input columns: {missing}")
+    df = df.copy()
+    print(f"Starting inference feature engineering on {len(df)} rows...")
+    
+    
+    # 1. Encode categoricals
+    df = encode_categoricals(df, cat_columns=cat_cols)
+    print(f"✓ Encoded categorical columns: {cat_cols}")
+    
+    # 2. Rolling features za svaki window
+    for window in rolling_windows:
+        for col in rolling_cols:
+            if col not in df.columns:
+                continue
+            df[f'{col}_mean_last_{window}'] = df[col].rolling(window=window, min_periods=1).mean()
+            df[f'{col}_std_last_{window}'] = df[col].rolling(window=window, min_periods=1).std()
+        print(f"✓ Created rolling features (window={window})")
+    
+    # 3. Diff i trend features
+    for col in rolling_cols:
+        if col not in df.columns:
+            continue
+        df[f'{col}_diff'] = df[col].diff()
+        df[f'{col}_trend'] = df[col] - df[f'{col}_mean_last_20']
+    
+    # 4. Lag features
+    df = create_lag_features(df, columns=lag_cols, lags=lag_periods)
+    print(f"✓ Created lag features (lags={lag_periods})")
+    
+    # 5. Dodaj missing kolone koje model očekuje
+    required_cols = {
+        'machine_id': 1,           # Default machine ID
+        'shift': 1,                # Default shift (day)
+        'seasonal_offset': 0,      # Default
+        'tool_wear_factor': 1.0,   # Default (bez habanja)
+        'batch_complexity': 1.0,   # Default
+        'downtime': 0,             # Trenutno nema downtime-a
+        'uptime': 100              # Default uptime
+    }
+    
+    for col, default_val in required_cols.items():
+        if col not in df.columns:
+            df[col] = default_val
+    
+    print(f"✓ Added required model columns")
+    
+    # 6. Fill NaN vrednosti
+    df = df.fillna(0)
+    
+    print(f"Inference feature engineering complete! Final shape: {df.shape}")
+    
+    return df
