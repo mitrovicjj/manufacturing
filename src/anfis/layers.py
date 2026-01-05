@@ -192,7 +192,7 @@ def layer2_rule_firing_verbose(anfis_model, mu, sample_idx=0, top_k=5):
     
     print(f"\n   🔝 Top {top_k} firing rules:")
     for rank, (rule_idx, strength) in enumerate(rule_strengths[:top_k], 1):
-        from anfis_utils import rule_to_string
+        from utils import rule_to_string
         rule = anfis_model.rule_base[rule_idx]
         rule_str = rule_to_string(anfis_model, rule)
         bar = '█' * int(strength * 50)  # Visual bar

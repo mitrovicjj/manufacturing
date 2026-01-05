@@ -12,6 +12,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import mlflow.pyfunc
+from sklearn.metrics import roc_auc_score
+from src.anfis.core import ANFISAdvanced
 
 
 def convert_to_pytorch(anfis_model):
@@ -96,6 +99,7 @@ def train_hybrid(
     anfis_model,
     X_train,
     y_train,
+    premise_training = True,
     epochs=100,
     lr_premise=1e-3,
     lr_consequent=1e-2,
@@ -123,6 +127,17 @@ def train_hybrid(
     print("\n" + "="*70)
     print("🔥 ANFIS HYBRID TRAINING (Premise + Consequent)")
     print("="*70)
+
+    # Postavi premise mode
+    # ✅ 
+    if premise_training:
+        anfis_model.enable_premise_training()
+    else:
+        print("🔒 Fixed premise parameters")
+    
+    # Optimizer (samo trainable params)
+    trainable_params = anfis_model.get_trainable_params()
+    optimizer = optim.Adam(trainable_params)
 
     # Konverzija u PyTorch
     if not hasattr(anfis_model, 'consequent_params_torch'):
@@ -188,13 +203,14 @@ def train_hybrid(
             progress_bar = '█' * int((epoch + 1) / epochs * 30)
             print(f"{epoch+1:<10} {epoch_loss:<15.6f} {progress_bar}")
 
-    print("-"*70)
-    print(f"✅ Hybrid training complete! Final loss: {epoch_loss:.6f}")
 
     # Sync nazad u NumPy
     anfis_model.consequent_params = anfis_model.consequent_params_torch.detach().numpy()
     anfis_model.mf_params = [p.detach().numpy() for p in anfis_model.mf_params_torch]
 
+    anfis_model.sync_params_from_torch()  # ← Sinhronizuj nazad
+    
+    print(f"✅ Training complete | Premise training: {premise_training}")
     return history
 
 
@@ -252,3 +268,61 @@ def evaluate(anfis_model, X_test, y_test):
     print("="*70)
 
     return metrics
+
+
+class ANFISPyFunc(mlflow.pyfunc.PythonModel):
+    def __init__(self, anfis_model):
+        self.anfis_model = anfis_model
+    
+    def predict(self, context, model_input):
+        if hasattr(self.anfis_model, 'consequent_params_torch'):
+            X_torch = torch.tensor(model_input.values, dtype=torch.float32)
+            with torch.no_grad():
+                y_pred_t = forward_torch(self.anfis_model, X_torch)
+            return y_pred_t.cpu().numpy().reshape(-1, 1)
+        else:
+            return self.anfis_model.forward(model_input.values)[0]
+
+def mlflow_train_anfis(X_train, y_train, X_test, y_test, params):  # ← DODAJ X_test, y_test
+    """MLflow-compatible ANFIS training"""
+    with mlflow.start_run(run_name="anfis_hybrid"):
+        mlflow.log_params(params)
+        
+        model = ANFISAdvanced(n_inputs=X_train.shape[1], **params)
+        convert_to_pytorch(model)
+        history = train_hybrid(model, X_train, y_train, **params)
+        
+        # Evaluacija
+        metrics = evaluate(model, X_test, y_test)  # ← Sada defined
+        mlflow.log_metric("final_loss", history['loss'][-1])
+        mlflow.log_metric("r2_score", metrics['r2'])
+        
+        # Log model
+        pyfunc_model = ANFISPyFunc(model)
+        mlflow.pyfunc.log_model(
+            "anfis_model", 
+            python_model=pyfunc_model,
+            input_example=X_test[:5]
+        )
+        
+        return model, metrics
+    
+def set_premise_training(self, enable: bool = True):
+    """
+    Kontroliraj premise training:
+    enable=True: Premise trainable (adaptivni MF)
+    enable=False: Premise fixed (domain knowledge only)
+    """
+    self.premise_training_enabled = enable
+    
+    if enable:
+        print("🔧 Premise training ENABLED (adaptivni MF centri/širine)")
+        self.enable_premise_training()  # Tvoja postojeća funkcija
+    else:
+        print("🔒 Premise training DISABLED (fixed ISO/OSHA init)")
+        if hasattr(self, 'mf_params_torch'):
+            # Zaustavi gradijente
+            for p in self.mf_params_torch:
+                p.requires_grad = False
+    
+    return self.premise_training_enabled

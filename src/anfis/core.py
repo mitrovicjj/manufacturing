@@ -9,10 +9,11 @@ import numpy as np
 from typing import Literal, List, Tuple
 
 # Import modula
-from anfis_config import ANFISConfig
-from anfis_membership import initialize_mf_params
-from anfis_utils import generate_rule_base, setup_linguistic_terms
-import anfis_layers as layers
+import torch
+from src.anfis.config import ANFISConfig
+from src.anfis.membership import initialize_mf_params
+from src.anfis.utils import generate_rule_base, setup_linguistic_terms
+import src.anfis.layers as layers
 
 
 class ANFISAdvanced:
@@ -152,7 +153,7 @@ class ANFISAdvanced:
         w_sorted = sorted(enumerate(inter['w'][sample_idx]), key=lambda x: x[1], reverse=True)
         print(f"   Top {top_rules} firing rules:")
         for rank, (rule_idx, strength) in enumerate(w_sorted[:top_rules], 1):
-            from anfis_utils import rule_to_string
+            from utils import rule_to_string
             rule_str = rule_to_string(self, self.rule_base[rule_idx])
             print(f"   {rank}. w{rule_idx+1:2d} = {strength:.4f} | {rule_str}")
         
@@ -210,6 +211,68 @@ class ANFISAdvanced:
         """
         output, _ = self.forward(X)
         return output
+    
+
+    # ==========================================
+# PREMISE TRAINING ENABLEMENT
+# ==========================================
+
+    def enable_premise_training(self):
+        """
+        Omogući premise training (MF centers i widths postaju trainable).
+        Pozovi PRIJE train_hybrid() ako želiš da treniraš premise parametre.
+        """
+        print("\n🔧 Enabling premise training...")
+        
+        # Premise parameters (Layer 1) - MF centers i widths
+        self.mf_params_torch = []
+        for i in range(self.n_inputs):
+            params_tensor = torch.tensor(
+                self.mf_params[i],  # (n_mfs, 2) = [center, sigma]
+                dtype=torch.float32,
+                requires_grad=True  # ← KLJUČNO: Omogućava gradijente!
+            )
+            self.mf_params_torch.append(params_tensor)
+        
+        print(f"✅ Premise trainable: {len(self.mf_params_torch)} input groups")
+        print(f"✅ Total premise params: {sum(p.numel() for p in self.mf_params_torch)}")
+
+    def get_trainable_params(self):
+        """
+        Vrati listu trainable parametara za optimizer.
+        Premise: lr=1e-3 (sporije, preserve interpretability)
+        Consequent: lr=1e-2 (brže, data-driven)
+        """
+        if not hasattr(self, 'mf_params_torch'):
+            self.enable_premise_training()
+        
+        params = []
+        
+        # Premise parameters (slower learning)
+        for mf_params in self.mf_params_torch:
+            params.append({'params': mf_params, 'lr': 1e-3})
+        
+        # Consequent parameters (faster learning)
+        if not hasattr(self, 'consequent_params_torch'):
+            self.consequent_params_torch = torch.tensor(
+                self.consequent_params, dtype=torch.float32, requires_grad=True
+            )
+        params.append({'params': self.consequent_params_torch, 'lr': 1e-2})
+        
+        return params
+
+    def sync_params_from_torch(self):
+        """
+        Sinhronizuj PyTorch parametre nazad u NumPy nakon treninga.
+        """
+        # Premise
+        self.mf_params = [p.detach().cpu().numpy() for p in self.mf_params_torch]
+        
+        # Consequent  
+        self.consequent_params = self.consequent_params_torch.detach().cpu().numpy()
+        
+        print("✅ Params synced from PyTorch → NumPy")
+
     
     
     # ==========================================
