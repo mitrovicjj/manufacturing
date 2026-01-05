@@ -202,25 +202,32 @@ def build_features(df,
 
 # FEATURE SELECTION HELPER
 
-def get_feature_columns(df, target_col='downtime_next'):
+def get_feature_columns(df, target_col='downtime_next', numeric_only=False):
     """
     Auto-detect feature columns by excluding non-feature columns.
     
     Args:
         df: DataFrame with all columns
-        target_col: Name of target column
+        target_col: Name of target column  
+        numeric_only: If True, return ONLY numeric columns (for ANFIS)
     
     Returns:
         List of feature column names
     """
     exclude = [
         'timestamp', 'cycle_id', 'production_order_id',
-        'downtime_next', 'downtime_next_5', 'downtime_next_10',  # all potential targets
-        'operator', 'maintenance_type',  # original categorical (we use _encoded versions)
-        target_col  # make sure target is excluded
+        'downtime_next', 'downtime_next_5', 'downtime_next_10',
+        'operator', 'maintenance_type',
+        target_col
     ]
     
     features = [c for c in df.columns if c not in exclude]
+    
+    if numeric_only:
+        # ✅ GLOBALNI FIX: SAMO NUMERIČKE za ANFIS
+        numeric_features = df[features].select_dtypes(include=[np.number]).columns.tolist()
+        print(f"🔢 Filtered {len(numeric_features)}/{len(features)} numeric features")
+        return numeric_features
     
     return features
 

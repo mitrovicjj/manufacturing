@@ -12,7 +12,7 @@ from imblearn.over_sampling import RandomOverSampler
 from src.ml.features import build_features, get_feature_columns
 from src.ml.feature_store import FeatureStore
 from hashlib import md5
-
+import mlflow.xgboost
 
 def create_model_pipeline(df_features, target_col, model_params=None):
     """
@@ -26,6 +26,7 @@ def create_model_pipeline(df_features, target_col, model_params=None):
     Returns:
         sklearn Pipeline spreman za fit()
     """
+    
     if model_params is None:
         model_params = {
             'n_estimators': 200,
@@ -115,7 +116,8 @@ def train_model(data_path,
                 rolling_window=20,
                 test_size=0.2,
                 oversample=True,
-                model_params=None):
+                model_params=None,
+                inject_nan_pct=0.0):
     """
     Complete training pipeline sa FULL features (numeric + categorical encoded).
     
@@ -201,6 +203,13 @@ def train_model(data_path,
             X_train[feature_cols], y_train, method='none'
         )
     
+    if inject_nan_pct > 0:
+        print(f"💉 Injecting {inject_nan_pct*100}% NaNs into training data...")
+        nan_mask = np.random.rand(*X_train_resampled.shape) < inject_nan_pct
+        X_train_resampled[nan_mask] = np.nan
+        mlflow.log_param("inject_nan_pct", inject_nan_pct)
+
+
     # [6/6] FULL Pipeline training
     print(f"\n[6/6] Training FULL pipeline...")
     clf = create_model_pipeline(df_features, target_col, model_params=model_params)
@@ -279,6 +288,10 @@ def main():
         'random_state': 42
     }
     
+    with mlflow.start_run(run_name=f"xgb_{args.target_window}w_{args.rolling_window}rw"):  # ← DODAJ
+        mlflow.log_params(vars(args))  # Loguje sve CLI args
+        mlflow.log_param("model_params", model_params)
+
     train_model(
         data_path=args.data,
         output_model_path=args.model_output,

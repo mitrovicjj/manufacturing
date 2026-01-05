@@ -3,11 +3,23 @@ import argparse
 import joblib
 import pandas as pd
 import numpy as np
-from config import (
-    FINAL_MODEL_PATH,
-    FINAL_THRESHOLD,
-    FINAL_PREDICTIONS_PATH)
-from src.ml.features import build_features, get_feature_columns
+import sys
+
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+
+from run import (
+    MODEL_PATH, 
+    RISK_THRESHOLDS, 
+    FEATURE_COLUMNS,
+    INPUT_CSV,
+    OUTPUT_CSV
+)
+
+FINAL_MODEL_PATH = MODEL_PATH
+FINAL_THRESHOLD = RISK_THRESHOLDS['low']
+HIGH_THRESHOLD = RISK_THRESHOLDS['high']
+FEATURES_CSV = INPUT_CSV
+OUTPUT_CSV = OUTPUT_CSV
 
 def load_model(model_path):
     """
