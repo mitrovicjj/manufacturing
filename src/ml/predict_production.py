@@ -1,6 +1,6 @@
 import joblib
 import pandas as pd
-import numpy as np  # ← Dodaj numpy import
+import numpy as np
 import sys
 import os
 import shutil
@@ -62,11 +62,10 @@ class ProductionPredictor:
         
         priority = "HIGH" if risk_score > 0.6 else "MEDIUM" if risk_score > 0.35 else "LOW"
         
-        # ✅ KLJUČNA IZMENA: Konvertuj sve u Python native tipove
         return {
-            "risk_score": float(risk_score),              # numpy.float64 → float
-            "maintenance_trigger": bool(maintenance_trigger),  # numpy.bool_ → bool
-            "priority": str(priority)                      # Osiguraj da je string
+            "risk_score": float(risk_score),
+            "maintenance_trigger": bool(maintenance_trigger),
+            "priority": str(priority)
         }
     def predict_with_history(self, current_cycle: dict, history: list):
         """
@@ -106,8 +105,7 @@ class ProductionPredictor:
 
 # --- TEST ---
 if __name__ == "__main__":
-    # Obriši stari cache
-    print("🗑️  Čistim stari cache...")
+    print("Čistim stari cache...")
     shutil.rmtree("data/feature_cache", ignore_errors=True)
     os.makedirs("data/feature_cache", exist_ok=True)
     
@@ -129,13 +127,13 @@ if __name__ == "__main__":
     import json
     try:
         json_result = json.dumps(result)
-        print("\n✅ JSON serialization successful!")
+        print("\nJSON serialization successful!")
         print(json_result)
     except TypeError as e:
-        print(f"\n❌ JSON serialization failed: {e}")
+        print(f"\nJSON serialization failed: {e}")
     
     print("\n" + "="*50)
-    print("📊 PREDIKCIJA ZA TEST CYCLE:")
+    print("PREDIKCIJA ZA TEST CYCLE:")
     print("="*50)
     print(f"  Risk Score: {result['risk_score']:.4f}")
     print(f"  Maintenance Trigger: {result['maintenance_trigger']}")

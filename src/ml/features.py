@@ -224,7 +224,6 @@ def get_feature_columns(df, target_col='downtime_next', numeric_only=False):
     features = [c for c in df.columns if c not in exclude]
     
     if numeric_only:
-        # ✅ GLOBALNI FIX: SAMO NUMERIČKE za ANFIS
         numeric_features = df[features].select_dtypes(include=[np.number]).columns.tolist()
         print(f"🔢 Filtered {len(numeric_features)}/{len(features)} numeric features")
         return numeric_features
@@ -288,7 +287,7 @@ def build_inference_features(df,
     df = create_lag_features(df, columns=lag_cols, lags=lag_periods)
     print(f"✓ Created lag features (lags={lag_periods})")
     
-    # 5. Dodaj missing kolone koje model očekuje
+    # 5. Missing columns
     required_cols = {
         'machine_id': 1,           # Default machine ID
         'shift': 1,                # Default shift (day)
