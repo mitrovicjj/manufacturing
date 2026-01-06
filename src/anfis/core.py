@@ -273,7 +273,25 @@ class ANFISAdvanced:
         
         print("✅ Params synced from PyTorch → NumPy")
 
-    
+        
+    def set_premise_training(self, enable: bool = True):
+        """
+        Kontroliraj premise training:
+        enable=True: Premise trainable (adaptivni MF)
+        enable=False: Premise fixed (domain knowledge only)
+        """
+        self.premise_training_enabled = enable
+        
+        if enable:
+            print("🔧 Premise training ENABLED (adaptivni MF centri/širine)")
+            self.enable_premise_training()
+        else:
+            print("🔒 Premise training DISABLED (fixed ISO/OSHA init)")
+            if hasattr(self, 'mf_params_torch'):
+                for p in self.mf_params_torch:
+                    p.requires_grad = False
+        
+        return self.premise_training_enabled
     
     # ==========================================
     # HELPER METHODS
