@@ -7,6 +7,7 @@ import mlflow
 import mlflow.sklearn
 import numpy as np
 from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, confusion_matrix
+import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 

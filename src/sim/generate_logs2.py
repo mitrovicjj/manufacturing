@@ -31,19 +31,19 @@ def simulate_machine_logs_v2(
     current_failure_state = failure_state
     
     state_thresholds = {
-        "vib_warning": 0.028,      # Sniženo: 0.028mm/s (češće warning)
-        "vib_critical": 0.045,     # Sniženo: 0.045mm/s  
-        "temp_warning": 26.0       # Sniženo: 26°C (češće aktivacija)
+        "vib_warning": 0.028,
+        "vib_critical": 0.045,
+        "temp_warning": 26.0
     }
     failure_probs = {
         "healthy": 0.001,
-        "warning": 0.12,           # Povećano: 12%
-        "degraded": 0.35,          # Povećano: 35%
-        "critical": 0.75           # Povećano: 75%
+        "warning": 0.12,
+        "degraded": 0.35,
+        "critical": 0.75
     }
     
     tool_wear_factor = 1.0
-    wear_rate = 0.00015  # Brže habanje
+    wear_rate = 0.00015
     current_batch_id = f"PO-{np.random.randint(1000,9999)}"
     batch_complexity = 1.0
     
@@ -224,7 +224,7 @@ if __name__ == "__main__":
     # VALIDATION
     print("1. Temperature range (°C):", 
           f"{df_all['temperature'].min():.1f} - {df_all['temperature'].max():.1f}")
-    # FIX: Parsing sa format='mixed'
+
     df_all['month'] = pd.to_datetime(df_all['timestamp'], format='mixed').dt.month
     print("2. Seasonal effect (Jan, Jul, Dec):")
     seasonal_temp = df_all.groupby('month')['temperature'].mean()

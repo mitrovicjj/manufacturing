@@ -4,19 +4,17 @@ import json
 BASE_URL = "http://localhost:5001"
 
 print("="*70)
-print("🧪 TEST: Buffer-based prediction")
+print("TEST: Buffer-based prediction")
 print("="*70)
 
-# Očisti buffer prvo
 requests.post(f"{BASE_URL}/clear_history")
-print("\n✅ Buffer cleared")
+print("\nBuffer cleared")
 
-# Proveri status
 status = requests.get(f"{BASE_URL}/buffer_status").json()
-print(f"📊 Buffer: {status['buffer_size']}/{status['max_size']}")
+print(f"Buffer: {status['buffer_size']}/{status['max_size']}")
 
-# Šalji normalne cikluse dok ne nakupi buffer
-print("\n📈 Popunjavanje buffer-a sa normalnim ciklusima...")
+
+print("\nPopunjavanje buffer-a sa normalnim ciklusima...")
 for i in range(20):
     cycle = {
         "cycle_id": 1000 + i,
@@ -36,12 +34,12 @@ for i in range(20):
               f"Used History={result.get('used_history', False)}, "
               f"Buffer={result.get('history_length', 0)}")
 
-# Proveri buffer status
-status = requests.get(f"{BASE_URL}/buffer_status").json()
-print(f"\n✅ Buffer popunjen: {status['buffer_size']}/{status['max_size']}")
 
-# Šalji kritične cikluse
-print("\n🚨 Slanje kritičnih ciklusa...")
+status = requests.get(f"{BASE_URL}/buffer_status").json()
+print(f"\nBuffer popunjen: {status['buffer_size']}/{status['max_size']}")
+
+
+print("\nSlanje kritičnih ciklusa...")
 for i in range(3):
     critical = {
         "cycle_id": 2000 + i,
@@ -61,5 +59,5 @@ for i in range(3):
           f"Priority={result['priority']}")
 
 print("\n" + "="*70)
-print("✅ Test završen!")
+print("Test završen!")
 print("="*70)
