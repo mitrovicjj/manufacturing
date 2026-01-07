@@ -4,6 +4,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import joblib
 from sklearn.preprocessing import MinMaxScaler
+print("🚀 Starting generate_logs2.py...")
+print(f"Working directory: {Path.cwd()}")
+print(f"Script location: {Path(__file__).parent}")
 
 def simulate_machine_logs_v2(
     machine_id,
@@ -163,75 +166,91 @@ def simulate_machine_logs_v2(
     return pd.DataFrame(rows)
 
 def prepare_anfis_features(df):
-    df = df.copy()
+    df = df.sort_values(['machine_id', 'timestamp']).copy()  # Ensure sorted for lags/diffs
     state_map = {"healthy": 0, "warning": 1, "degraded": 2, "critical": 3}
     df['failure_state_encoded'] = df['failure_state'].map(state_map)
     
+    # Existing features
     df['cycle_dev_trend_5'] = (
         df.groupby('machine_id')['cycle_time']
         .rolling(5, min_periods=1).mean().reset_index(0, drop=True) / df['cycle_time'] - 1
     )
-    
     df['vib_temp_ratio'] = df['vibration'] / (df['temperature'] + 1e-6)
-    
     df['maint_group'] = (df['maintenance_type'] != "").cumsum()
     df['cum_uptime_since_maint'] = (
         df.groupby(['machine_id', 'maint_group'])['uptime'].cumsum()
     )
     
+    # NEW: Differentials (anomaly rates)
+    df['vibration_diff'] = df.groupby('machine_id')['vibration'].diff()
+    df['cycle_time_diff'] = df.groupby('machine_id')['cycle_time'].diff()
+    df['cycle_time_accel'] = df.groupby('machine_id')['cycle_time_diff'].diff()
+    
+    # NEW: Expanded lags/rolling (volatility)
+    df['vibration_lag1'] = df.groupby('machine_id')['vibration'].shift(1)
+    df['vibration_lag3'] = df.groupby('machine_id')['vibration'].shift(3)
+    df['cycle_time_lag7'] = df.groupby('machine_id')['cycle_time'].shift(7)
+    df['vib_rolling_std_7'] = df.groupby('machine_id')['vibration'].rolling(7, min_periods=1).std().reset_index(0, drop=True)
+    df['cycle_q90_14'] = df.groupby('machine_id')['cycle_time'].rolling(14, min_periods=1).quantile(0.9).reset_index(0, drop=True)
+    
+    # NEW: Trends (EMA decay)
+    df['vib_ema'] = df.groupby('machine_id')['vibration'].ewm(span=14).mean().reset_index(0, drop=True)
+    
+    # NEW: Simplified Fourier (low-freq on rolling; vectorized to avoid apply errors)
+    for mach in df['machine_id'].unique():
+        mask = df['machine_id'] == mach
+        rolled = df.loc[mask, 'vibration'].rolling(30, min_periods=1).mean()
+        fft_vals = np.fft.rfft(rolled.dropna()).real[:3]  # Top 3 components
+        fft_series = pd.Series(np.resize(fft_vals, len(rolled)), index=rolled.index)
+        df.loc[mask, 'fft_vib_1'] = fft_series.fillna(0)
+        df.loc[mask, 'fft_vib_2'] = fft_series.shift(1).fillna(0)  # Phase shift proxy
+    
+    # NEW: Interactions
+    df['vib_cycle_ratio'] = df['vibration'] / (df['cycle_time'] + 1e-6)
+    
+    # NEW: Cyclic maintenance (sin/cos for type periodicity)
+    maint_map = {'': 0, 'preventive': 1, 'corrective': 2}
+    df['maint_encoded'] = df['maintenance_type'].map(maint_map).fillna(0)
+    df['maint_sin'] = np.sin(2 * np.pi * df['maint_encoded'] / 3)
+    df['maint_cos'] = np.cos(2 * np.pi * df['maint_encoded'] / 3)
+    
+    # Fill NaNs forward/back (realistic for TS)
+    num_feats = df.select_dtypes(include=[np.number]).columns
+    df[num_feats] = df[num_feats].fillna(method='ffill').fillna(method='bfill').fillna(0)
+    
+    # Scale all numerics (now richer set)
     scaler = MinMaxScaler()
-    num_cols = ['temperature', 'vibration', 'pressure', 'cycle_time', 
-                'tool_wear_factor', 'batch_complexity']
+    num_cols = ['temperature', 'vibration', 'pressure', 'cycle_time', 'tool_wear_factor', 
+                'batch_complexity'] + [col for col in df.columns if any(k in col for k in 
+                ['diff', 'lag', 'std', 'q90', 'ema', 'fft', 'ratio', 'accel'])]
     df[num_cols] = scaler.fit_transform(df[num_cols])
     joblib.dump(scaler, 'models/feature_scaler.pkl')
     
+    print("New TS features added:", [col for col in df.columns if any(k in col.lower() for k in ['diff','lag','std','q90','ema','fft','ratio','accel','sin','cos'])])
+    
     return df
 
-# MAIN
 if __name__ == "__main__":
-    machine_params = [
-        {"base_cycle_time": 60.0, "sigma_cycle": 5.0},
-        {"base_cycle_time": 65.0, "sigma_cycle": 6.0},
-        {"base_cycle_time": 55.0, "sigma_cycle": 4.0},
-    ]
+    print("Generating logs...")
     
-    dfs = []
-    for idx, mp in enumerate(machine_params, 1):
-        
-        df_i = simulate_machine_logs_v2(
-            machine_id=idx,
-            start_time="2025-01-01 06:00:00",
-            n_cycles=5000,
-            base_cycle_time=mp["base_cycle_time"],
-            sigma_cycle=mp["sigma_cycle"],
-            micro_downtime_prob=0.02,
-            preventive_interval=100
+    # Generate 3 machines x 5000 cycles
+    all_logs = []
+    start_date = "2025-01-01T08:00:00"
+    
+    for machine_id in [1, 2, 3]:
+        logs = simulate_machine_logs_v2(
+            machine_id=machine_id,
+            start_time=start_date,
+            n_cycles=5000
         )
-        dfs.append(df_i)
+        all_logs.append(logs)
     
-    df_all = pd.concat(dfs, ignore_index=True)
-        
-    DATA_RAW = Path("data/raw")
-    DATA_PROCESSED = Path("data/processed")
-
-    DATA_RAW.mkdir(parents=True, exist_ok=True)
-    DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
-
-    df_all.to_csv(DATA_RAW / "logs_all_machines_v2.csv", index=False)
-    df_anfis = prepare_anfis_features(df_all)
-    df_anfis.to_csv(DATA_PROCESSED / "logs_anfis_ready.csv", index=False)
-
-    # VALIDATION
-    print("1. Temperature range (°C):", 
-          f"{df_all['temperature'].min():.1f} - {df_all['temperature'].max():.1f}")
-
-    df_all['month'] = pd.to_datetime(df_all['timestamp'], format='mixed').dt.month
-    print("2. Seasonal effect (Jan, Jul, Dec):")
-    seasonal_temp = df_all.groupby('month')['temperature'].mean()
-    print(seasonal_temp.get([1,7,12], "N/A"))
+    df_full = pd.concat(all_logs, ignore_index=True)
     
-    print("3. Failure progression:")
-    print(df_all.groupby('failure_state')['downtime_flag'].mean())
-    print("4. Sensor correlation:")
-    print(df_all[['temperature','vibration','pressure']].corr())
-    print(f"\nGenerated {len(df_all):,} cycles")
+    print("Raw shape:", df_full.shape)
+    df_anfis = prepare_anfis_features(df_full)
+    print("Saving logs_anfis_ready.csv...")
+    
+    df_anfis.to_csv('data/processed/logs_anfis_ready.csv', index=False)
+    print("COMPLETE! Generated:", len(df_anfis), "rows")
+    print("Check: data/processed/logs_anfis_ready.csv")
