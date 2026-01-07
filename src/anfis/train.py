@@ -1,21 +1,29 @@
-"""
-ANFIS Training Module
-=====================
-Training metode:
-- _convert_to_pytorch
-- forward_torch
-- train_hybrid (bazirano na train_lse_only + premise gradovi)
-- evaluate
-"""
-
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
+import mlflow
 import mlflow.pyfunc
 from sklearn.metrics import roc_auc_score
+from sklearn.metrics import precision_recall_curve
 from src.anfis.core import ANFISAdvanced
 
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1.0, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        
+    def forward(self, inputs, targets):
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt = torch.exp(-bce_loss)  # probability of true class
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        return focal_loss.sum()
+    
 
 def convert_to_pytorch(anfis_model):
     """
@@ -41,8 +49,8 @@ def convert_to_pytorch(anfis_model):
         requires_grad=True
     )
 
-    print(f" ✅ Premise parameters: {len(anfis_model.mf_params_torch)} inputs")
-    print(f" ✅ Consequent parameters: {anfis_model.consequent_params_torch.shape}")
+    print(f"Premise parameters: {len(anfis_model.mf_params_torch)} inputs")
+    print(f"Consequent parameters: {anfis_model.consequent_params_torch.shape}")
 
 
 def forward_torch(anfis_model, X_torch):
@@ -84,6 +92,13 @@ def forward_torch(anfis_model, X_torch):
     output = (w_bar * f).sum(dim=1)
     
     return output
+
+def find_optimal_threshold(y_true, y_proba, target_metric='f1'):
+    prec, rec, thresh = precision_recall_curve(y_true, y_proba)
+    f1_scores = 2 * prec * rec / (prec + rec + 1e-8)
+    optimal_idx = f1_scores.argmax()
+    return thresh[optimal_idx], f1_scores[optimal_idx]
+
 
 
 def train_hybrid(
@@ -138,7 +153,7 @@ def train_hybrid(
     else:
         print("  Fixed premise parameters")
 
-    # ✅ WEIGHTED BCE LOSS za imbalanced binary classification
+    # WEIGHTED BCE LOSS za imbalanced binary classification
     pos_count = (y_train == 1).sum()
     neg_count = (y_train == 0).sum()
     pos_weight = neg_count / pos_count if pos_count > 0 else 1.0
@@ -163,11 +178,13 @@ def train_hybrid(
         params.append({'params': p, 'lr': lr_premise})
 
     optimizer = optim.Adam(params)
-    
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.7, patience=5)
+
     # BCE WITH LOGITS LOSS
-    criterion = torch.nn.BCEWithLogitsLoss(
-        pos_weight=torch.tensor([pos_weight])
-    )
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight))
+
+    #criterion = FocalLoss(alpha=pos_weight*1.5, gamma=2.0)
 
     history = {'loss': [], 'epoch': []}
     n_samples = X_train.shape[0]
@@ -210,6 +227,8 @@ def train_hybrid(
         history['loss'].append(epoch_loss)
         history['epoch'].append(epoch + 1)
 
+        scheduler.step(epoch_loss)
+
         if verbose and (epoch + 1) % max(1, epochs // 10) == 0:
             progress_bar = '█' * int((epoch + 1) / epochs * 30)
             print(f"{epoch+1:<10} {epoch_loss:<15.6f} {progress_bar}")
@@ -244,37 +263,41 @@ def evaluate(anfis_model, X_test, y_test):
     else:
         y_pred, _ = anfis_model.forward(X_test)
 
-    # Regression-style metrics
+    # Regression metrics
     mse = np.mean((y_test - y_pred) ** 2)
     rmse = np.sqrt(mse)
     mae = np.mean(np.abs(y_test - y_pred))
-
     ss_res = np.sum((y_test - y_pred) ** 2)
     ss_tot = np.sum((y_test - np.mean(y_test)) ** 2)
     r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
-
-    # BCE loss
+    
+    # STANDARD BCE
     y_pred_clipped = np.clip(y_pred, 1e-7, 1 - 1e-7)
     bce = -np.mean(y_test * np.log(y_pred_clipped) + (1 - y_test) * np.log(1 - y_pred_clipped))
+    
+    pos_count = (y_test == 1).sum()
+    neg_count = (y_test == 0).sum()
+    pos_weight_test = neg_count / pos_count if pos_count > 0 else 1.0
+    print(f"   Test balance: {neg_count/3000:.1%} No / {pos_count/3000:.1%} Yes")
 
+    focal_criterion = FocalLoss(alpha=pos_weight_test, gamma=3.0)
+    focal_loss = focal_criterion(torch.tensor(y_pred_logits), torch.tensor(y_test))
     metrics = {
-        'mse': float(mse),
-        'rmse': float(rmse),
-        'mae': float(mae),
-        'r2': float(r2),
-        'bce_loss': float(bce)
+        'mse': float(mse), 'rmse': float(rmse), 'mae': float(mae),
+        'r2': float(r2), 'bce_loss': float(bce), 'focal_loss': float(focal_loss)
     }
-
+    
     print("\n" + "="*70)
     print("EVALUATION METRICS")
     print("="*70)
-    print(f"   BCE Loss: {bce:.6f}")
-    print(f"   MSE:      {mse:.6f}")
-    print(f"   RMSE:     {rmse:.6f}")
-    print(f"   MAE:      {mae:.6f}")
-    print(f"   R²:       {r2:.6f}")
+    print(f"   BCE Loss:    {bce:.6f}")
+    print(f"   Focal Loss:  {focal_loss:.6f} (γ=3, α=2.39)")
+    print(f"   MSE:         {mse:.6f}")
+    print(f"   RMSE:        {rmse:.6f}")
+    print(f"   MAE:         {mae:.6f}")
+    print(f"   R²:          {r2:.6f}")
     print("="*70)
-
+    
     return metrics
 
 

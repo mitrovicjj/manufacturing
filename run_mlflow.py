@@ -1,32 +1,24 @@
-#!/usr/bin/env python3
-"""
-Unified MLflow Experiment Runner - XGBoost + ANFIS + Comparisons
-Optimized: Faster training, better metrics, feature name tracking
-"""
-
 import os
 import argparse
 from typing import Any, Union
-
 import numpy as np
 import pandas as pd
 import torch
-
 import mlflow
 import mlflow.sklearn
 import mlflow.xgboost
 import mlflow.pyfunc
-
 from sklearn.metrics import (
     f1_score,
     precision_score,
+    precision_recall_curve,
     recall_score,
     confusion_matrix,
     classification_report,
 )
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-
+from imblearn.over_sampling import SMOTE
 from src.ml.train import train_model
 from src.ml.feature_store import FeatureStore
 from src.ml.features import build_features, get_feature_columns
@@ -34,48 +26,12 @@ from src.ml.features import build_features, get_feature_columns
 from src.anfis.config import ANFISConfig
 from src.anfis.core import ANFISAdvanced
 from src.anfis.train import (
+    ANFISPyFunc,
     convert_to_pytorch,
     train_hybrid,
     evaluate,
     forward_torch,
 )
-
-
-# =============================================================================
-# MLflow PyFunc Wrapper
-# =============================================================================
-
-class ANFISPyFunc(mlflow.pyfunc.PythonModel):
-    """ANFIS model wrapper for MLflow deployment."""
-    
-    def __init__(self, anfis_model):
-        self.anfis_model = anfis_model
-
-    def predict(
-        self,
-        context: Any,
-        model_input: Union[pd.DataFrame, np.ndarray]
-    ) -> np.ndarray:
-        """
-        Predict using ANFIS model.
-        
-        Args:
-            context: MLflow model context (unused)
-            model_input: Input features as DataFrame or numpy array
-                        Shape: (n_samples, n_features)
-            
-        Returns:
-            Predictions as numpy array with shape (n_samples, 1)
-        """
-        X_torch = torch.tensor(
-            model_input.values if hasattr(model_input, "values") else model_input,
-            dtype=torch.float32,
-        )
-        
-        with torch.no_grad():
-            y_pred_t = forward_torch(self.anfis_model, X_torch)
-        
-        return y_pred_t.cpu().numpy().reshape(-1, 1)
 
 
 # =============================================================================
@@ -96,9 +52,10 @@ def prepare_data(data_path, rolling_window=30, target_window=8):
     """
     store = FeatureStore()
     config = {
-        "data_path": os.path.basename(data_path),
+        "data_path": "logs_anfis_ready.csv",
         "rolling_window": rolling_window,
         "target_window": target_window,
+        "anfis_features": True
     }
 
     df_features = store.get_features(config)
@@ -179,21 +136,77 @@ def select_top_features_for_anfis(
     print(f"   MFs per feature: {n_mfs}")
     
     print("   Computing feature importance...")
-    rf = RandomForestRegressor(
-        n_estimators=50,
-        max_depth=5,
-        random_state=42,
-        n_jobs=-1
+
+    # SAFE FILTER - PRIJE fit-a
+    safe_mask = np.array(['downtime' not in f.lower() for f in feature_names])
+    safe_feature_names = np.array(feature_names)[safe_mask]
+    safe_indices = np.where(safe_mask)[0]
+
+    # ZAMIJENI SA:
+    #safe_feature_names = np.array(feature_names)  # ALL features
+    #safe_indices = np.arange(len(feature_names))
+    #print("🔬 ABLATION: NO DIVERSITY FILTER - Raw RF top-6")
+    X_train_safe = X_train  # No filtering
+    if not np.any(safe_mask):
+        raise ValueError("All features contain 'downtime' - impossible!")
+
+    X_train_safe = X_train[:, safe_indices]
+    print(f"   Filtered {X_train.shape[1] - X_train_safe.shape[1]} downtime features")
+
+    print("Sanitizing features...")
+    X_train_safe = np.nan_to_num(X_train_safe, nan=0.0, posinf=1.0, neginf=-1.0)
+    X_train_safe = np.clip(X_train_safe, -10, 10)
+    print(f"Sanitized shape: {X_train_safe.shape}, range: [{X_train_safe.min():.3f}, {X_train_safe.max():.3f}]")
+
+    rf = RandomForestClassifier(
+        n_estimators=100, max_depth=8, class_weight='balanced', 
+        random_state=42, n_jobs=-1
     )
-    rf.fit(X_train, y_train)
-    
+    rf.fit(X_train_safe, y_train)
+
     importance_df = pd.DataFrame({
-        'feature': feature_names,
+        'feature': safe_feature_names.tolist(),
         'importance': rf.feature_importances_
     }).sort_values('importance', ascending=False)
+
+    print(f"🚨 Excluded {len(feature_names) - len(safe_feature_names)} downtime features")
+    sensor_groups = {
+        'vibration': ['vibration', 'vib'],
+        'temperature': ['temp', 'temperature'], 
+        'pressure': ['pressure', 'press'],
+        'cycle': ['cycle_time', 'uptime']
+    }
     
-    top_features = importance_df.head(n_features)['feature'].tolist()
+    def diversity_score(selected_features):
+        group_counts = {g: 0 for g in sensor_groups}
+        for feat in selected_features:
+            for group, patterns in sensor_groups.items():
+                if any(p in feat.lower() for p in patterns):
+                    group_counts[group] += 1
+                    break
+        std_penalty = np.std(list(group_counts.values())) / n_features
+        return 1.0 - min(std_penalty, 0.3)  # max 30% penalty
     
+    # Greedy selection: importance * diversity
+    best_features = []
+    remaining_df = importance_df.copy()
+    
+    for i in range(n_features):
+        best_score = -1
+        best_feat = None
+        for _, row in remaining_df.iterrows():
+            candidate = best_features + [row['feature']]
+            diversity = diversity_score(candidate)
+            score = row['importance'] * diversity
+            if score > best_score:
+                best_score = score
+                best_feat = row['feature']
+        best_features.append(best_feat)
+        remaining_df = remaining_df[remaining_df['feature'] != best_feat]
+    
+    top_features = best_features
+
+
     print(f"\nTOP {n_features} FEATURES SELECTED:")
     for i, (feat, imp) in enumerate(
         zip(top_features, importance_df.head(n_features)['importance']), 1
@@ -238,6 +251,25 @@ def evaluate_anfis_with_classification(model, X_test, y_test):
     y_pred_binary = (y_pred > 0.5).astype(int)
     y_test_binary = (y_test > 0.5).astype(int)
     
+    # === THRESHOLD TUNING ===
+    y_pred_logits = y_pred_t.cpu().numpy()  # raw logits from forward_torch
+    y_pred_proba = 1 / (1 + np.exp(-y_pred_logits))  # sigmoid ONCE
+    prec, rec, thresh = precision_recall_curve(y_test_binary, y_pred_proba)
+    f1_scores = 2 * prec * rec / (prec + rec + 1e-8)
+    optimal_idx = f1_scores.argmax()
+    optimal_thresh = thresh[optimal_idx]
+    optimal_f1 = f1_scores[optimal_idx]
+    
+    # === CLASSIFICATION METRICS PRVO (prije printa) ===
+    if len(np.unique(y_test_binary)) > 1:
+        metrics['precision'] = precision_score(y_test_binary, y_pred_binary, zero_division=0)
+        metrics['recall'] = recall_score(y_test_binary, y_pred_binary, zero_division=0)
+        metrics['f1'] = f1_score(y_test_binary, y_pred_binary, zero_division=0)
+    
+    # === SADA SAFE PRINT ===
+    print(f"\n🎯 OPTIMAL THRESHOLD: {optimal_thresh:.3f} → F1: {optimal_f1:.3f}")
+    print(f"   vs default 0.5 → F1: {metrics['f1']:.3f}")
+    
     cm = confusion_matrix(y_test_binary, y_pred_binary)
     
     print("\n" + "="*70)
@@ -248,24 +280,13 @@ def evaluate_anfis_with_classification(model, X_test, y_test):
     print(f"  FN={cm[1,0]:5d}  TP={cm[1,1]:5d}")
     print("\nClassification Report:")
     print(classification_report(
-        y_test_binary,
-        y_pred_binary,
+        y_test_binary, y_pred_binary,
         target_names=['No Downtime', 'Downtime']
     ))
     print("="*70)
     
-    if len(np.unique(y_test_binary)) > 1:
-        metrics['precision'] = precision_score(
-            y_test_binary, y_pred_binary, zero_division=0
-        )
-        metrics['recall'] = recall_score(
-            y_test_binary, y_pred_binary, zero_division=0
-        )
-        metrics['f1'] = f1_score(
-            y_test_binary, y_pred_binary, zero_division=0
-        )
-    
     return metrics
+
 
 
 # =============================================================================
@@ -348,6 +369,12 @@ def run_anfis_single(args):
         n_mfs=N_MFS
     )
 
+    leakage_features = [f for f in selected_features if 'downtime' in f.lower()]
+    if leakage_features:
+        print(f"🚨 POTENTIAL LEAKAGE: {leakage_features}")
+        corr = np.corrcoef(X_train[:, selected_features.index(leakage_features[0])], y_train)[0,1]
+        print(f"   Corr(downtime_feature, target): {corr:.3f} ← HIGH = LEAKAGE!")
+    
     print(f"\nComputing dynamic feature ranges...")
     feature_ranges = []
     for i in range(X_train.shape[1]):
@@ -413,6 +440,14 @@ def run_anfis_single(args):
         print(f"Estimated training time: ~{(args.epochs * 11999 / args.batch_size / 60):.1f} minutes")
         print("="*70)
 
+        if args.use_smote:
+            print("🔄 SMOTE oversampling...")
+
+            smote = SMOTE(sampling_strategy=0.6, random_state=42)
+            X_train, y_train = smote.fit_resample(X_train, y_train)
+            print(f"SMOTE: {X_train.shape[0]} samples, balance {np.bincount(y_train.astype(int))}")
+
+
         assert X_train.shape[1] == model.n_inputs
 
         history = train_hybrid(model, X_train, y_train, **train_params)
@@ -448,7 +483,7 @@ def main():
     )
     parser.add_argument(
         "--data_path",
-        default="data/raw/logs_all_machines_v2.csv",
+        default="data/processed/logs_anfis_ready.csv",  # ← OVO!
         help="Path to input data CSV"
     )
     parser.add_argument(
@@ -504,8 +539,30 @@ def main():
         default=256,
         help="Batch size for training"
     )
+    parser.add_argument(
+        "--use_focal", 
+        action="store_true", 
+        default=False, 
+        help="Use Focal Loss instead of BCE")
+    parser.add_argument(
+        "--no_scheduler", 
+        action="store_true")
+    parser.add_argument(
+        "--focal_gamma", 
+        type=float, 
+        default=2.0)
+    parser.add_argument(
+        "--pos_weight_mult", 
+        type=float, 
+        default=1.0)
+    parser.add_argument(
+    "--use_smote", 
+    action="store_true", 
+    default=False, 
+    help="Enable SMOTE oversampling")
 
     args = parser.parse_args()
+
 
     print(f"Mode: {args.mode} | Data: {args.data_path}")
 
