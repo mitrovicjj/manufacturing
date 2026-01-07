@@ -443,7 +443,7 @@ def run_anfis_single(args):
         if args.use_smote:
             print("🔄 SMOTE oversampling...")
 
-            smote = SMOTE(sampling_strategy=0.6, random_state=42)
+            smote = SMOTE(sampling_strategy=0.7, random_state=42)
             X_train, y_train = smote.fit_resample(X_train, y_train)
             print(f"SMOTE: {X_train.shape[0]} samples, balance {np.bincount(y_train.astype(int))}")
 

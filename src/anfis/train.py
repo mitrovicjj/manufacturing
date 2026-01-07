@@ -182,9 +182,9 @@ def train_hybrid(
         optimizer, mode='min', factor=0.7, patience=5)
 
     # BCE WITH LOGITS LOSS
-    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight))
+    #criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight))
 
-    #criterion = FocalLoss(alpha=pos_weight*1.5, gamma=2.0)
+    criterion = FocalLoss(alpha=pos_weight*1.5, gamma=2.0)
 
     history = {'loss': [], 'epoch': []}
     n_samples = X_train.shape[0]
@@ -280,7 +280,7 @@ def evaluate(anfis_model, X_test, y_test):
     pos_weight_test = neg_count / pos_count if pos_count > 0 else 1.0
     print(f"   Test balance: {neg_count/3000:.1%} No / {pos_count/3000:.1%} Yes")
 
-    focal_criterion = FocalLoss(alpha=pos_weight_test, gamma=3.0)
+    focal_criterion = FocalLoss(alpha=pos_weight_test, gamma=1.5)
     focal_loss = focal_criterion(torch.tensor(y_pred_logits), torch.tensor(y_test))
     metrics = {
         'mse': float(mse), 'rmse': float(rmse), 'mae': float(mae),
