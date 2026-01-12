@@ -1,202 +1,211 @@
 # Predictive Maintenance and Throughput Optimization for Manufacturing Lines
 
-Tailored for domestic industry with limited sensors, real-world noise, and a focus on practical, measurable impact.
+ML-driven predictive maintenance combining XGBoost and ANFIS (Adaptive Neuro-Fuzzy Inference System) for interpretable failure prediction. Tailored for industrial environments with limited sensors, real-world noise and focus on practical impact.
 
 ---
 
-## Project Overview
+## Overview
 
-This project combines machine learning (XGBoost) and adaptive neuro-fuzzy systems (ANFIS) to predict equipment failures and generate interpretable machine health scores.
+This project explores the balance between predictive accuracy and interpretability in manufacturing maintenance by comparing:
 
-The core objectives are to:
-- predict short-term and mid-term slowdown/failure risk
-- generate interpretable machine-health scores using fuzzy systems
-- compare learned fuzzy reasoning (ANFIS) against purely statistical ML predictions (XGBoost)
-- provide actionable insights for maintenance scheduling
+- **XGBoost**: High-accuracy black-box predictions
+- **ANFIS**: Interpretable fuzzy logic with learned membership functions
+- **Pure Fuzzy** (planned): Expert-driven rule-based baseline
+
+**Objectives:**
+- Predict equipment failures 5-12 cycles ahead
+- Generate interpretable machine health scores using fuzzy reasoning
+- Quantify accuracy-interpretability tradeoffs
+- Provide actionable maintenance scheduling insights
 
 **Current status:**  
-Feature Store implementation, MLflow experiment tracking, and production XGBoost model deployed.  
-ANFIS implementation complete with training pipeline.  
-
-Fuzzy logic is a central component, complementing ML by providing transparent reasoning in environments where data is limited, noisy, or incomplete - common characteristics of domestic industrial settings.
+Production XGBoost model deployed. ANFIS implementation complete with hybrid PyTorch-based training, threshold optimization and MLflow experiment tracking
 
 ---
 
-## Data pipeline
+## Architecture
 
-### Raw data
-- Source: `data/raw/logs_all_machines_v2.csv`
-- Volume: 15k production cycles, 18 columns
-- Includes: cycle times, sensor readings, maintenance records, operator assignments
+### Data pipeline
 
-### Feature engineering
-- 49 generated features including:
-  - Rolling statistics (window sizes 15-40)
-  - Lag features (periods 1, 3, 5)
-  - Utilization patterns
-  - Categorical encoding (operator, maintenance_type)
-
-### Feature store
-- Cache directory: `data/feature_cache/`
-- Cache hit rate: ~70%
-
----
-
-## Machine Learning Component
-
-### XGBoost Model
-
-**Architecture:**
-- 42 numeric features, 6 encoded categorical features
-- Binary classification (failure/no-failure prediction)
-- Windowed target variable (configurable prediction horizon)
-
-**Production Model:**
-- Path: `models/production/PRODUCTION_MODEL.pkl`
-- Configuration: `rw15_tw5_lr008`
-- Hyperparameters:
-  - Rolling window: 15 cycles
-  - Target window: 5 cycles ahead
-  - Learning rate: 0.08
-  - Max depth: 6
-  - Scale pos weight: 13
-
-**Performance Metrics:**
-- ROC-AUC: 0.8382
-- Recall @ 0.35 threshold: 99.2%
-- False alarms: 76 / 3000 test cycles
-- Precision-recall trade-off optimized for business cost minimization
-
-**Experiment Tracking:**
-- MLflow integration for 12 hyperparameter configurations
-- Tracked metrics: ROC-AUC, F1, recall, precision, false alarms, downtime caught
-
-### Hyperparameter Search Results
-
-| Model           | Rolling Window | Target Window | ROC-AUC | Recall @ 0.35 | False Alarms |
-|-----------------|----------------|---------------|---------|---------------|--------------|
-| rw15_tw5_lr008  | 15             | 5             | 0.8382  | 99.2%         | 76           |
-| rw40_tw10_lr010 | 40             | 10            | 0.9674  | 99.6%         | 241          |
-| long_rw20_tw12  | 20             | 12            | 0.9746  | 99.8%         | 98           |
-
-Production model selected based on lowest false alarm rate while maintaining >99% recall - TBD further analysis 
-
----
-
-## Fuzzy Logic Component
-
-### ANFIS (Adaptive Neuro-Fuzzy Inference System)
-
-**Architecture:**
-- 5-layer structure: fuzzification, rule firing, normalization, consequent, output
-- Domain-aware initialization
-- Gaussian membership functions with adaptive centers and widths
-- Linguistic terms: Low, Medium-Low, Medium, Medium-High, High
-
-**Implementation:**
-- Modular design across 6 modules:
-  - `config.py`: Configuration and domain knowledge
-  - `membership.py`: Membership function initialization
-  - `layers.py`: Layer-by-layer forward pass
-  - `core.py`: Main ANFIS class
-  - `train.py`: Hybrid learning algorithm (PyTorch-based)
-  - `utils.py`: Rule generation and utilities
-
-**Training:**
-- Hybrid learning approach:
-  - Premise parameters (membership functions): gradient descent with lower learning rate
-  - Consequent parameters (linear functions): gradient descent with higher learning rate
-- PyTorch backend for automatic differentiation
-- Batch training with configurable epochs and learning rates
-
-**Purpose:**
-- Interpretability: extract human-readable fuzzy rules
-- Robustness: handle missing or noisy sensor data
-- Transparency: provide reasoning for maintenance teams
-
-### Pure Fuzzy System (Planned)
-
-Rule-based system with manually defined membership functions and expert-crafted rules for baseline comparison.
-
----
-
-## Comparison Framework
-
-### Approaches Under Evaluation
-
-1. **XGBoost (Black Box ML)**
-   - Highest predictive accuracy
-   - Minimal interpretability
-   - Sensitive to data distribution shifts
-
-2. **ANFIS (Learned Fuzzy)**
-   - Balanced accuracy and interpretability
-   - Learns membership functions from data
-   - Maintains rule-based structure
-
-3. **Pure Fuzzy (Domain Expert)**
-   - Full interpretability
-   - No learning required
-   - Performance depends on expert knowledge quality
-
----
-
-## Production Pipeline
-
-```text
-data/raw/logs_all_machines_v2.csv (15k cycles, 18 cols)
+```
+Raw Data
     ↓
-Feature Engineering (rolling, lag, categorical encoding)
+Feature Engineering (49 features: rolling stats, lags, utilization)
     ↓
-data/feature_cache/features_*.csv (49 features, 70% cache hit)
+Feature Store
     ↓
 Model Training (XGBoost + ANFIS)
     ↓
-models/production/PRODUCTION_MODEL.pkl
-    ↓
-MLflow Tracking (http://localhost:5000)
-    ↓
-Evaluation & Comparison
+MLflow Tracking & Evaluation
 ```
+
+**Dataset:**
+- Volume: 15,000 production cycles
+- Features: Cycle times, vibration, temperature, pressure, maintenance records
+
+**Feature Store:**
+- Configurable rolling windows (15-40 cycles) and target horizons (5-12 cycles)
+- Automated feature versioning by pipeline configuration
+
+---
+
+## Model Comparison
+
+### XGBoost (Production Model)
+
+**Performance:**
+- ROC-AUC: 0.8382
+- Recall @ 0.35 threshold: 99.2%
+- False alarms: 76 / 3000 test cycles
+
+**Configuration:**
+- Rolling window: 15 cycles
+- Prediction horizon: 5 cycles ahead
+- Hyperparameters: lr=0.08, depth=6, scale_pos_weight=13
+
+### ANFIS
+
+**Architecture:**
+- 5-layer fuzzy inference system (fuzzification, rule firing, normalization, consequent, output)
+- Gaussian membership functions with adaptive parameters
+- Rule explosion mitigation: 4-8 input features create 16-256 rules
+
+**Training:**
+- Hybrid learning algorithm (PyTorch backend):
+  - Premise parameters (membership functions): gradient descent with lr=1e-3
+  - Consequent parameters (linear functions): gradient descent with lr=1e-2
+- Binary classification with BCEWithLogitsLoss + Focal Loss
+- Automatic threshold optimization (0.35-0.45)
+- Batch training with gradient tracking via MLflow
+
+**Current Performance (6 features, 64 rules):**
+- F1 Score: **0.48**
+- Precision: **0.34** | Recall: **0.85**
+- Optimal threshold: **0.375**
+
+**Implementation:**
+- `src/anfis/config.py`: Domain-aware configuration
+- `src/anfis/membership.py`: Gaussian MF initialization
+- `src/anfis/layers.py`: Layer-by-layer forward pass
+- `src/anfis/core.py`: Main ANFIS class
+- `src/anfis/train.py`: Hybrid learning + evaluation
+- `src/anfis/utils.py`: Rule generation utilities
+
+---
+
+## MLflow Experiment Tracking
+
+**Tracked Metrics:**
+- Classification: F1, Precision, Recall, ROC-AUC, Optimal Threshold
+- Regression: MSE, RMSE, MAE, R²
+- Loss: BCE, Focal Loss
+- Training: Premise/Consequent gradient norms
+
+**Experiment Modes:**
+```bash
+# XGBoost grid search
+python run_mlflow.py --mode xgboost_grid
+
+# ANFIS single run
+python run_mlflow.py --mode anfis_single --n_anfis_features 6 --epochs 50
+
+# ANFIS ablation study (16, 32, 64 rules)
+python run_mlflow.py --mode rule_ablation --experiment_name "ablation_v1"
+```
+
+**MLflow UI:** `http://localhost:5000`
+
+---
+
+## Key Features
+
+### Feature Store
+- Hash-based caching with configuration versioning
+- Supports multiple rolling windows and target horizons
+- Automatic invalidation on data/config changes
+
+### Threshold Optimization
+- Automatic F1-optimal threshold search (0.2-0.6 range)
+- Prioritizes recall for failure-critical applications
+- Logs optimal threshold per experiment
+
+### Feature Selection for ANFIS
+- Random Forest importance ranking
+- Diversity enforcement across sensor groups (vibration, temperature, pressure, cycle time)
+- Prevents rule explosion: 4-8 features → manageable rule counts
+
+---
 
 ## Planned Extensions
 
-### Interpretability Analysis
+### 1. Interpretability Analysis
+- Extract top-k ANFIS rules by activation frequency
 - SHAP values for XGBoost feature importance
-- Fuzzy rule extraction from ANFIS (identify most activated rules)
-- Side-by-side comparison of reasoning paths between approaches
-- Disagreement analysis: when and why models produce different predictions
+- Reasoning comparison: "Why did models disagree?"
 
-### Synthetic Data Generator
-- Generate edge-case scenarios:
-  - Gradual degradation patterns
-  - Sudden failure events
-  - Sensor noise and missing data
-  - Out-of-distribution conditions
-- Evaluate model robustness and failure modes
-- Test ANFIS performance with incomplete sensor coverage
+### 2. Ablation studies
+- Feature group contribution: rolling vs. lag vs. sensor-only
+- Membership function count
+- Rule count scaling
 
-### Ablation Study
-- Train models with different feature subsets:
-  - Rolling features only
-  - Lag features only
-  - Sensor data only
-  - Full feature set
-- Quantify contribution of each feature group
-- Identify minimal feature set for acceptable performance
+### 3. Real-world Robustness Testing
+- Edge cases: sensor dropouts, sudden failures, gradual degradation
+- Synthetic data generator for out-of-distribution scenarios
+- Cost-benefit analysis: downtime cost vs. false alarm cost
 
-### Cost-Benefit Analysis
-- Define business costs:
-  - Unplanned downtime cost
-  - Preventive maintenance cost
-  - False alarm cost
-- Calculate net savings
-- Optimize decision threshold based on cost function
-- Compare business value across different models
-
-### Real-time Monitoring Dashboard
-- PowerBI integration for visualization
-- Live prediction streaming simulation
+### 4. Production Deployment
+- Real-time monitoring dashboard (PowerBI integration planned)
 - Model agreement/disagreement tracking
 - Feature drift detection
-- Fuzzy rule activation heatmap
+
+---
+
+## Setup
+
+**Key dependencies:**
+- `xgboost`, `scikit-learn`, `imbalanced-learn`
+- `torch` (ANFIS backend)
+- `mlflow` (experiment tracking)
+- `pandas`, `numpy`
+
+**Quick start:**
+```bash
+# Train XGBoost
+python run_mlflow.py --mode xgboost_grid
+
+# Train ANFIS (6 features, 64 rules)
+python run_mlflow.py --mode anfis_single --n_anfis_features 6 --epochs 50
+
+# View experiments
+mlflow ui
+```
+
+---
+
+## Project structure
+
+```
+manufacturing/
+├── data/
+│   ├── raw/                    # Original dataset
+│   ├── processed/              # Feature-engineered data
+│   └── feature_cache/          # Cached feature sets
+├── src/
+│   ├── ml/                     # XGBoost pipeline
+│   │   ├── train.py
+│   │   ├── features.py
+│   │   └── feature_store.py
+│   └── anfis/                  # ANFIS implementation
+│       ├── config.py
+│       ├── membership.py
+│       ├── layers.py
+│       ├── core.py
+│       ├── train.py
+│       └── utils.py
+├── models/
+│   └── production/             # Deployed models
+├── run_mlflow.py               # Main experiment runner
+└── README.md
+```
+
+---
